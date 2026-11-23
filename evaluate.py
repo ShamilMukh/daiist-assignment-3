@@ -17,7 +17,9 @@ import re
 import statistics as st
 from pathlib import Path
 
-from config import CHAT_MODEL, DESIGNS, EVAL_DIR, JUDGE_MODEL, NOT_FOUND, get_key
+import hashlib
+
+from config import CHAT_MODEL, DESIGNS, EVAL_DIR, JUDGE_MODEL, NOT_FOUND, get_key, make_llm
 from agent import RagAgent, default_approve
 
 Q_PATH = EVAL_DIR / "questions.csv"
@@ -84,7 +86,8 @@ def retrieval_eval(designs: list[str] | None = None) -> list[dict]:
 async def run_questions(qs: list[dict], approve=lambda p: False, path: Path = ANS_PATH, fresh: bool = False) -> list[dict]:
     done = {}
     if path.exists() and not fresh:
-        done = {json.loads(l)["id"]: json.loads(l) for l in path.read_text().splitlines() if l.strip()}
+        recs = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        done = {r["id"]: r for r in recs if r.get("guardrail") != "error"}      # never reuse failed calls
     elif path.exists():
         path.unlink()
     out = []
@@ -95,9 +98,17 @@ async def run_questions(qs: list[dict], approve=lambda p: False, path: Path = AN
                 continue
             try:
                 r = await agent.ask(q["question"])
-            except Exception as e:                                     # noqa: BLE001  (API errors must not kill the run)
+            except Exception as e:                                     # noqa: BLE001
+                if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                    raise SystemExit(f"\nQuota/rate limit hit at {q['id']}: {str(e)[:300]}\n"
+                                     f"Finished answers are saved in {path.name}. Wait for the reset (09:00 Spain), "
+                                     f"set LLM_RPM, or use another CHAT_MODEL in .env, then run again.")
                 r = dict(question=q["question"], answer=f"ERROR: {e}", refused=False, cited=[], retrieved={},
                          guardrail="error", seconds=0, tokens_in=0, tokens_out=0, searches=0, add_denied=[])
+                r["id"] = q["id"]
+                out.append(r)                                           # kept in memory only, not saved
+                print(f"{q['id']}: ERROR (not saved): {str(e)[:120]}")
+                continue
             r["id"] = q["id"]
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -133,19 +144,32 @@ Reply with JSON only: {{"correctness": "...", "supported": true|false, "reason":
 
 
 def judge(q: dict, r: dict) -> dict:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    llm = ChatGoogleGenerativeAI(model=JUDGE_MODEL, temperature=0,
-                                 google_api_key=get_key())
+    """LLM judge. Verdicts are cached in eval/judge_cache.json so a stopped run resumes without repeating calls."""
+    cache_path = EVAL_DIR / "judge_cache.json"
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    key = f"{q['id']}|{hashlib.sha256(r['answer'].encode()).hexdigest()[:10]}"
+    if key in cache:
+        return cache[key]
+    llm = make_llm(JUDGE_MODEL)
     cited = r["cited"] or list(r["retrieved"])[:3]
     passages = "\n\n".join(f"[{c}]\n{r['retrieved'].get(c, '(not retrieved)')[:5000]}" for c in cited)
     msg = JUDGE_PROMPT.format(q=q["question"], ref=q["reference_answer"], passages=passages, a=r["answer"])
-    text = llm.invoke(msg).content
+    try:
+        text = llm.invoke(msg).content
+    except Exception as e:                                              # noqa: BLE001
+        if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+            raise SystemExit(f"\nJudge hit the quota at {q['id']}. Verdicts so far are cached; set JUDGE_MODEL / "
+                             f"LLM_RPM in .env or wait for the reset, then re-run `main.py evaluate`.")
+        raise
     text = text if isinstance(text, str) else "".join(b.get("text", "") for b in text)
     m = re.search(r"\{.*\}", text, re.S)
     try:
-        return json.loads(m.group(0))
+        verdict = json.loads(m.group(0))
     except Exception:                                                   # noqa: BLE001
         return dict(correctness="error", supported=False, reason=text[:200])
+    cache[key] = verdict
+    cache_path.write_text(json.dumps(cache, indent=1))
+    return verdict
 
 
 def classify(q: dict, r: dict, c: dict, j: dict | None) -> str:

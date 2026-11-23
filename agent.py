@@ -34,7 +34,7 @@ except ImportError:                               # older LangGraph
 
 import os
 
-from config import CHAT_MODEL, NOT_FOUND, ROOT, get_key
+from config import CHAT_MODEL, NOT_FOUND, ROOT, get_key, make_llm
 
 CITE = re.compile(r"\[([a-z0-9_]+:[^\]\[]+?)\]")
 BLOCK = re.compile(r"^### \[([^\]]+)\][^\n]*\n", re.M)
@@ -95,7 +95,7 @@ class RagAgent:
 
         tools = [StructuredTool.from_function(coroutine=search, name="search", description=desc.get("search", "Search the corpus."), args_schema=SearchArgs),
                  StructuredTool.from_function(coroutine=add_document, name="add_document", description=desc.get("add_document", "Index a file."), args_schema=AddArgs)]
-        llm = ChatGoogleGenerativeAI(model=CHAT_MODEL, temperature=0, google_api_key=get_key())
+        llm = make_llm(CHAT_MODEL)
         self.agent = make_agent(llm, tools, (ROOT / "AGENTS.md").read_text())
         return self
 
