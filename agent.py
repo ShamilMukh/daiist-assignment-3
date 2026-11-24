@@ -41,8 +41,23 @@ BLOCK = re.compile(r"^### \[([^\]]+)\][^\n]*\n", re.M)
 MAX_STEPS = 14
 
 
+TRAIL = re.compile(r"(\s*\((?:part \d+/\d+|\w{1,3})\))+$")
+
+
 def norm(c: str) -> str:
-    return re.sub(r"\s*\(part \d+/\d+\)$", "", c.strip())
+    """'gdpr:Article 83(5)' and 'ai_act:Article 3 (part 2/8)' both normalise to the article, which is what
+    search returns and what we compare against. Paragraph numbers are extra precision, not a fabrication."""
+    return TRAIL.sub("", c.strip())
+
+
+def cites(text: str) -> list[str]:
+    """All citations in an answer, normalised. A bracket may hold several: [a:Article 5, b:Article 9]."""
+    out = []
+    for m in CITE.findall(text):
+        for part in re.split(r",\s*(?=[a-z0-9_]+:)|;\s*", m):
+            if part.strip():
+                out.append(norm(part))
+    return out
 
 
 def text_of(content) -> str:
@@ -104,15 +119,20 @@ class RagAgent:
         return False
 
     async def _call(self, name: str, args: dict) -> str:
-        res = await self.session.call_tool(name, args)
-        text = "\n".join(getattr(c, "text", "") for c in res.content).strip()
-        bad = getattr(res, "is_error", False) or getattr(res, "isError", False)
-        return f"ERROR: {text}" if bad else text
+        for attempt in (1, 2):                                  # one retry: a tool crash must not look like "not found"
+            res = await self.session.call_tool(name, args)
+            text = "\n".join(getattr(c, "text", "") for c in res.content).strip()
+            bad = getattr(res, "is_error", False) or getattr(res, "isError", False)
+            if not bad:
+                return text
+            await asyncio.sleep(1)
+        return f"ERROR: {text}"
 
     async def ask(self, question: str) -> dict:
         t0 = time.time()
         msgs = [HumanMessage(question)]
         guardrail, answer, bad = "", "", []
+        drafts: list[str] = []
         for attempt in range(2):
             try:
                 out = await self.agent.ainvoke({"messages": msgs}, {"recursion_limit": MAX_STEPS})
@@ -122,7 +142,9 @@ class RagAgent:
             msgs = out["messages"]
             answer = text_of(msgs[-1].content).strip()
             retrieved = self._retrieved(msgs)
-            bad = [c for c in map(norm, CITE.findall(answer)) if c not in retrieved]
+            bad = [c for c in cites(answer) if c not in retrieved]
+            if bad:
+                drafts.append(answer)
             if not bad:
                 break
             if attempt == 0:
@@ -137,10 +159,11 @@ class RagAgent:
                 tin += m.usage_metadata.get("input_tokens", 0)
                 tout += m.usage_metadata.get("output_tokens", 0)
         return dict(question=question, answer=answer, refused=answer.upper().startswith(NOT_FOUND),
-                    cited=sorted({norm(c) for c in CITE.findall(answer)}), retrieved=retrieved,
+                    cited=sorted(set(cites(answer))), retrieved=retrieved,
                     guardrail=guardrail, seconds=round(time.time() - t0, 1), tokens_in=tin, tokens_out=tout,
                     searches=sum(1 for m in msgs if isinstance(m, ToolMessage) and m.name == "search"),
-                    add_denied=list(self.denied))
+                    add_denied=list(self.denied), draft=drafts, bad_citations=bad,
+                    tool_errors=sum(1 for m in msgs if isinstance(m, ToolMessage) and text_of(m.content).startswith("ERROR")))
 
     @staticmethod
     def _retrieved(msgs) -> dict[str, str]:

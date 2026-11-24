@@ -97,7 +97,16 @@ async def run_questions(qs: list[dict], approve=lambda p: False, path: Path = AN
                 out.append(done[q["id"]])
                 continue
             try:
-                r = await agent.ask(q["question"])
+                for attempt in range(1, 5):                              # transient overloads (503/500): wait and retry
+                    try:
+                        r = await agent.ask(q["question"])
+                        break
+                    except Exception as e:                               # noqa: BLE001
+                        transient = any(t in str(e) for t in ("503", "UNAVAILABLE", "500 INTERNAL", "overloaded"))
+                        if not transient or attempt == 4:
+                            raise
+                        print(f"{q['id']}: model busy, retry {attempt}/3 in {30 * attempt}s")
+                        await asyncio.sleep(30 * attempt)
             except Exception as e:                                     # noqa: BLE001
                 if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
                     raise SystemExit(f"\nQuota/rate limit hit at {q['id']}: {str(e)[:300]}\n"
@@ -105,10 +114,8 @@ async def run_questions(qs: list[dict], approve=lambda p: False, path: Path = AN
                                      f"set LLM_RPM, or use another CHAT_MODEL in .env, then run again.")
                 r = dict(question=q["question"], answer=f"ERROR: {e}", refused=False, cited=[], retrieved={},
                          guardrail="error", seconds=0, tokens_in=0, tokens_out=0, searches=0, add_denied=[])
-                r["id"] = q["id"]
-                out.append(r)                                           # kept in memory only, not saved
-                print(f"{q['id']}: ERROR (not saved): {str(e)[:120]}")
-                continue
+                raise SystemExit(f"\n{q['id']} failed: {str(e)[:200]}\nNothing was scored. Wait a few minutes and run "
+                                 f"`main.py evaluate` again; saved answers are reused.")
             r["id"] = q["id"]
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -174,6 +181,8 @@ def judge(q: dict, r: dict) -> dict:
 
 def classify(q: dict, r: dict, c: dict, j: dict | None) -> str:
     """Automatic first guess at the failure category. You review it by hand (bad test question is yours to call)."""
+    if r.get("tool_errors"):
+        return "tool error (infrastructure, not a model failure)"
     if not answerable(q):
         return "" if r["refused"] else "unsupported claim (answered an unanswerable question)"
     if r["refused"]:
@@ -201,7 +210,7 @@ def e2e_report(qs: list[dict], results: list[dict]) -> dict:
                          citations_valid=c["citations_valid"], has_citation=c["has_citation"], gold_any=c["gold_any"],
                          gold_all=c["gold_all"], judge_correctness=(j or {}).get("correctness", ""),
                          judge_supported=(j or {}).get("supported", ""), judge_reason=(j or {}).get("reason", ""),
-                         seconds=r["seconds"], tokens=r["tokens_in"] + r["tokens_out"], searches=r["searches"],
+                         tool_errors=r.get("tool_errors", 0), seconds=r["seconds"], tokens=r["tokens_in"] + r["tokens_out"], searches=r["searches"],
                          guardrail=r["guardrail"], answer=r["answer"]))
         if cat:
             fails.append(dict(id=q["id"], type=q["kind"], category_auto=cat, category_final="", notes=""))

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import re
 import sys
 from collections import Counter
@@ -18,10 +19,20 @@ def log(*a):
     print(*a, file=sys.stderr, flush=True)       # never stdout: the MCP server speaks JSON-RPC there
 
 
+_lock = threading.RLock()
+_client = None
+
+
 def collection(kind: str):
-    INDEX_DIR.mkdir(exist_ok=True)
-    c = chromadb.PersistentClient(path=str(INDEX_DIR))     # fresh client: sees writes from other processes
-    return c.get_or_create_collection(COLLECTIONS[kind], metadata={"hnsw:space": "cosine"})
+    """One ChromaDB client per process, created once. The MCP server runs tool calls on parallel threads
+    and Chroma's shared client setup is not thread-safe, so a client per call crashed under parallel searches.
+    (If another process writes to index/ while a long-running server is up, restart the server.)"""
+    global _client
+    with _lock:
+        if _client is None:
+            INDEX_DIR.mkdir(exist_ok=True)
+            _client = chromadb.PersistentClient(path=str(INDEX_DIR))
+        return _client.get_or_create_collection(COLLECTIONS[kind], metadata={"hnsw:space": "cosine"})
 
 
 # ------------------------------------------------------------------ retrieval
@@ -75,11 +86,17 @@ def _hit(id_, doc, meta, score) -> dict:
 
 def retrieve(query: str, k: int = 5, design: str | None = None) -> list[dict]:
     kind, hybrid = DESIGNS[design or DEFAULT_DESIGN]
+    qvec = embed_query(query)                       # network call, outside the lock
+    with _lock:
+        return _retrieve_locked(query, qvec, k, kind, hybrid)
+
+
+def _retrieve_locked(query: str, qvec: list[float], k: int, kind: str, hybrid: bool) -> list[dict]:
     col = collection(kind)
     if col.count() == 0:
         raise RuntimeError(f"index '{kind}' is empty: run `uv run python main.py index`")
     n = max(k, 20) if hybrid else k
-    r = col.query(query_embeddings=[embed_query(query)], n_results=min(n, col.count()),
+    r = col.query(query_embeddings=[qvec], n_results=min(n, col.count()),
                   include=["documents", "metadatas", "distances"])
     vec = [_hit(i, d, m, 1 - dist) for i, d, m, dist in zip(r["ids"][0], r["documents"][0], r["metadatas"][0], r["distances"][0])]
     if not hybrid:

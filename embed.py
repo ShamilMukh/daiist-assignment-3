@@ -6,9 +6,13 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 
 from config import EMBED_DIM, EMBED_MODEL, INDEX_DIR, get_key
+
+
+_qlock = threading.Lock()
 
 
 class QuotaExhausted(RuntimeError):
@@ -104,10 +108,13 @@ def embed(texts: list[str], task: str = "RETRIEVAL_DOCUMENT", batch: int = 50) -
 def embed_query(q: str) -> list[float]:
     """Cached on disk so repeated evaluation runs do not spend quota."""
     path = INDEX_DIR / "query_cache.json"
-    cache = json.loads(path.read_text()) if path.exists() else {}
     key = hashlib.sha256(f"{EMBED_MODEL}|{EMBED_DIM}|{q}".encode()).hexdigest()[:24]
-    if key not in cache:
-        cache[key] = embed([q], "RETRIEVAL_QUERY")[0]
-        INDEX_DIR.mkdir(exist_ok=True)
-        path.write_text(json.dumps(cache))
-    return cache[key]
+    with _qlock:                                    # parallel searches must not corrupt the cache file
+        cache = json.loads(path.read_text()) if path.exists() else {}
+        if key not in cache:
+            cache[key] = embed([q], "RETRIEVAL_QUERY")[0]
+            INDEX_DIR.mkdir(exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(cache))
+            tmp.replace(path)
+        return cache[key]

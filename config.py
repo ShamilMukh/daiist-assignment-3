@@ -58,7 +58,7 @@ def make_llm(model: str):
     if rpm > 0:
         from langchain_core.rate_limiters import InMemoryRateLimiter
         kw["rate_limiter"] = InMemoryRateLimiter(requests_per_second=rpm / 60, check_every_n_seconds=0.2, max_bucket_size=1)
-    return ChatGoogleGenerativeAI(model=model, temperature=0, google_api_key=get_key(), max_retries=2, **kw)
+    return ChatGoogleGenerativeAI(model=model, temperature=0, google_api_key=get_key(), max_retries=6, **kw)
 
 
 NOT_FOUND = "NOT_FOUND"           # an answer starting with this token is a refusal
