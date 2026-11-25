@@ -15,6 +15,11 @@
   "mean_tokens": 5324,
   "total_tokens": 202304,
   "human_agreement": {
-    "note": "no overlap between human_labels.csv and judged answers"
+    "n": 30,
+    "correctness_agreement": 0.967,
+    "supported_agreement": 0.967,
+    "disagreements": [
+      "q09"
+    ]
   }
 }
