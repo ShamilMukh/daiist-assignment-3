@@ -14,8 +14,8 @@ EVAL_DIR = ROOT / "eval"
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "gemini-embedding-2")   # SETUP.md: free tier ~1,000 texts/day
 EMBED_DIM = 768                   # truncated (Matryoshka); vectors are re-normalised
-CHAT_MODEL = os.getenv("CHAT_MODEL", "gemini-2.5-flash")
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini-2.5-flash")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "gemini-flash-lite-latest")
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini-flash-lite-latest")
 
 # chunking
 MAX_WORDS = 400                   # structure-based: split an article only above this
@@ -29,13 +29,13 @@ DESIGNS = {
     "article_hybrid": ("article", True),  # structure-based + BM25, fused with RRF
 }
 # Production design used by the MCP server. Set from the numbers in REPORT.md.
-DEFAULT_DESIGN = os.getenv("RAG_DESIGN", "article_hybrid")
+DEFAULT_DESIGN = os.getenv("RAG_DESIGN", "article")   # chosen by the retrieval comparison (see REPORT.md)
 
 # EUR-Lex texts are reusable under Commission Decision 2011/833/EU (attribution required).
 CORPUS = {
     "gdpr":     dict(celex="32016R0679", dir="corpus", title="GDPR (Regulation (EU) 2016/679)"),
     "ai_act":   dict(celex="32024R1689", dir="corpus", title="AI Act (Regulation (EU) 2024/1689)"),
-    "eprivacy": dict(celex="32002L0058", dir="corpus", title="ePrivacy Directive (2002/58/EC)"),
+    "eprivacy": dict(celex="02002L0058-20091219", dir="corpus", title="ePrivacy Directive (2002/58/EC)"),
     # held out on purpose: answers questions the core corpus cannot
     "data_act": dict(celex="32023R2854", dir="addon",  title="Data Act (Regulation (EU) 2023/2854)"),
 }

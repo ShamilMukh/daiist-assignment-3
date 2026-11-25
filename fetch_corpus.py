@@ -3,6 +3,7 @@
 EUR-Lex content may be reused under Commission Decision 2011/833/EU (attribution: (c) European Union,
 https://eur-lex.europa.eu). If EUR-Lex answers with a bot-check page instead of the law, open the URL
 printed below in a browser, 'Save page as' HTML, and put the file at the printed path."""
+import re
 import sys
 
 import requests
@@ -20,7 +21,7 @@ def fetch_all(only: list[str] | None = None) -> int:
             continue
         out = ROOT / meta["dir"] / f"{doc_id}.html"
         out.parent.mkdir(exist_ok=True)
-        if out.exists() and out.stat().st_size > 200_000:
+        if out.exists() and len(re.findall(rb"Article\s+\d+", out.read_bytes())) >= 40:
             print(f"ok (cached) {out}")
             continue
         for u in URLS:
@@ -31,7 +32,7 @@ def fetch_all(only: list[str] | None = None) -> int:
             except requests.RequestException as e:
                 print(f"  {url}: {e}")
                 continue
-            if r.ok and len(r.content) > 100_000 and b"Article" in r.content:
+            if r.ok and len(re.findall(rb"Article\s+\d+", r.content)) >= 40:
                 out.write_bytes(r.content)
                 print(f"saved {out} ({len(r.content)//1000} kB)")
                 break

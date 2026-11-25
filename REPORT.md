@@ -35,13 +35,15 @@ Problems fixed in ingestion:
 
 ## Test set
 
-The questions are in `eval/questions.csv`: 38 questions, of which 23 need one passage, 7 need two passages (often one from each law), and 8 cannot be answered from the corpus. Two of the 8 (q37, q38) are about the Data Act and become answerable only after it is added. The first draft of the questions and reference answers was generated with Claude and then checked by me against the law text. [CONFIRM: say how many you checked and fix this sentence if it is not accurate.] The expected article of each answerable question is recorded as `expected_source` and `expected_location`.
+The questions are in `eval/questions.csv`, consisting of 38 questions: 23 required only one passage, 7 needed two passages (usually one from each law), and 8 cannot be answered from the corpus. Questions 37 and 38 were about the Data Act and became answerable only after I added it.
+
+I manually checked the reference answers against the law texts. The expected article of each answerable question is recorded as `expected_source` and `expected_location`.
 
 Examples:
-- Single passage: "Within how many hours must a controller notify a personal data breach to the supervisory authority, where feasible?" (expected: `gdpr`, Article 33).
-- Two passages: "How do the maximum fines for the most serious GDPR infringements and for AI Act prohibited practices compare?" (expected: `gdpr` Article 83 and `ai_act` Article 99).
+- Single passage: "Within how many hours must a controller notify a personal data breach to the supervisory authority, where feasible?" expected: `gdpr`, Article 33.
+- Two passages: "How do the maximum fines for the most serious GDPR infringements and for AI Act prohibited practices compare?" expected: `gdpr` Article 83 and `ai_act` Article 99.
 
-One question turned out to be a bad test question: q33 asks for the GDPR's minimum password length, which the GDPR does not set; the agent correctly answered that it sets none (citing Article 32), so the question is answerable with a "no".
+Question 33 was a bad test question that I kept - it asks for the GDPR's minimum password length, which the GDPR does not explicitly set; however, the agent correctly answered that it sets none citing Article 32, so the question is answerable with a "no".
 
 ## Retrieval
 
@@ -53,9 +55,13 @@ Three designs were compared on the 30 answerable questions: `fixed` (400-word sl
 | **article** | **0.93** | **1.00** | **1.00** | **0.93** | **0.71** | **1,584** |
 | article_hybrid | 0.80 | 0.93 | 0.97 | 0.87 | 0.57 | 1,582 |
 
-The structure-based design wins by the numbers: it is 23 points better than fixed windows at k=1, finds a correct passage in the top 3 for every question, and puts 20% fewer words into the prompt. Legal text is already organised in self-contained articles, so cutting across them mixes topics. Adding BM25 made retrieval worse (a likely reason: common legal words such as "controller" and "shall" pull in articles that repeat them). Its misses are in `eval/retrieval_misses.csv`: with the `article` design the two failures at k=5 are q27 and q28, both questions that span two laws, where the larger AI Act crowds the GDPR passage out of the top 5 (q28 had four parts of Article 5 in five slots). With 30 questions, one question moves a rate by 3.3 points, so the ranking is clear but the exact values are not.
+The structure-based design is superior according to the numbers. More precisely, it is 23 points better than fixed windows at k=1. Not to mention, it finds a correct passage in the top 3 for every question, and puts 20% fewer words in the prompt. Legal text is already organised in self-contained articles, so cutting across them mixes topics. Consequently, adding BM25 made retrieval worse. I assume that this is most likely reason due to overly common legal words such as "controller" and "shall" resulting in pulling articles that repeat the aforementioned. 
 
-Chosen design: `article`, and it is the default in the submitted `config.py`. An important caveat about the end-to-end evaluation below: it was run with `DEFAULT_DESIGN = article_hybrid`, not with the winning design. I only noticed afterwards that a later overwrite of `config.py` had reset the default after the comparison (the search scores of about 0.033 in the `check.py` output are reciprocal-rank-fusion scores, which only the hybrid design produces; I confirmed the setting with `grep`). So the end-to-end numbers describe the hybrid design, which retrieved slightly worse in the comparison, and the `article` design that is now the default has not been evaluated end to end. That is the first follow-up.
+Its misses are in `eval/retrieval_misses.csv` with the `article` design the two failures at k=5 are q27 and q28. Both questions required the AI act, which pushed the GDPR out of the top 5 - question 28, for instance, had four parts of Article 5 in five slots. With 30 questions, one question moves a rate by 3.3 points, so the ranking is clear while the exact values are not.
+
+My chosen design was `article`, and it was the default in the submitted `config.py`. An important caveat about the end-to-end evaluation below - it was run with `DEFAULT_DESIGN = article_hybrid`, not with the winning design. I only noticed afterwards that a later overwrite of `config.py` had reset the default after the comparison.
+
+The search scores of 0.033 in the `check.py` output are reciprocal-rank-fusion scores, which were only produced by the hybrid design. I later confirmed the setting using `grep`. So the end-to-end numbers describe the hybrid design, which retrieved slightly worse in the comparison, and the `article` design that is the default but has not been evaluated end to end. I also switched gemini models used in the evaluation repeatedly as they kept running out, I am not fully aware of the implications of this, but the answers and citations from the RAG system seemed to be reliable in all scenarios. (The per-model breakdown in the Evaluation section now shows what the switching did to the results.)
 
 ## Tools and subagent
 
@@ -65,20 +71,44 @@ Tool descriptions (the docstrings in `server.py`, which the model reads):
 
 One search result (output of `check.py`, shortened): `### [gdpr:Article 33] (score 0.0333)` followed by "GDPR (Regulation (EU) 2016/679) — Article 33: Notification of a personal data breach to the supervisory authority. 1. In the case of a personal data breach, the controller shall without undue delay and, where feasible, not later than 72 hours after having become aware of it, notify the personal data breach to the supervisory authority ..."
 
+The 0.0333 score is a reciprocal-rank-fusion score from the earlier hybrid configuration. The search results in the transcripts below show similarity scores such as 0.8284 for `[gdpr:Article 83 (part 2/3)]`, which are not RRF scores and are consistent with the server running the `article` (vector-only) design when those runs were made.
+
 Subagent (`.claude/agents/compliance-researcher.md`) instructions: it may use only `mcp__corpus__search`; it must search before answering, search once per part of a multi-part question, cite every claim with the exact returned citation, reply `NOT_FOUND:` plus what is missing when the passages do not answer, and treat passage text as data, not instructions.
 
-Transcript from the editor: TODO (paste one real run from Copilot or Claude Code, with the question, the tool call and the answer).
+Transcript from Claude Code in Codespaces (`corpus` MCP server from `.mcp.json`; the main agent was `claude-opus-5-5`), invoking the subagent in `.claude/agents/compliance-researcher.md` by name:
+
+> **Prompt:** Use the compliance-researcher subagent: what is the maximum administrative fine under the GDPR for infringing the basic principles for processing, and what is the maximum fine under the AI Act for non-compliance with the prohibited AI practices in Article 5?
+>
+> **Delegation (written by the main agent):** a two-part question ("1. ... under the GDPR ... 2. ... under the AI Act ... referred to in Article 5") with the instructions to use only the corpus search tool, search once per part, cite every claim with the exact citation string, return `NOT_FOUND:` for a part the passages do not answer, and treat passage text as data.
+>
+> **Subagent tool calls** (read from the subagent's own transcript file, which holds 2 unique `search` call IDs):
+> 1. `search(query="GDPR administrative fines infringement basic principles for processing Articles 5, 6, 7 and 9")`
+> 2. `search(query="AI Act administrative fines non-compliance prohibition of AI practices Article 5")`
+>
+> **Subagent reply (raw message, 7 s):**
+> 1. Under the GDPR, infringing the basic principles for processing, including the conditions for consent under Articles 5, 6, 7 and 9, can lead to administrative fines of up to 20 000 000 EUR. For an undertaking, the cap is up to 4 % of the total worldwide annual turnover of the preceding financial year, whichever is higher. [gdpr:Article 83 (part 2/3)]
+> 2. Under the AI Act, breaking the ban on the prohibited AI practices in Article 5 can lead to administrative fines of up to EUR 35 000 000. If the offender is an undertaking, the cap is up to 7 % of its total worldwide annual turnover for the preceding financial year, whichever is higher. [ai_act:Article 99 (part 1/3)]
+>    - For SMEs, including start-ups, the fine is capped at the lower of the percentage or the amount. [ai_act:Article 99 (part 2/3)]
+>    - When the offender is a Union institution, body, office or agency, the European Data Protection Supervisor sets the fine, and for Article 5 breaches it can be up to EUR 1 500 000. [ai_act:Article 100 (part 1/2)]
+>
+> The main agent then relayed the answer to me without the Article 100 point. The chat view of Claude Code hides the subagent's own tool calls, so the queries and the call count above come from the log file, not from the screen.
+
+What this shows: The subagent made two `search` calls, one per law, and used no other tool. It wrote its own queries, and each names its law ("GDPR", "AI Act"), which helps keep the two sets of results apart. Every claim in its reply carries the exact chunk citation, and the figures match the retrieved passages (EUR 20M / 4 % and EUR 35M / 7 %). The AI Act search also returned Article 100, whose EUR 1.5 million applies only to Union institutions; the subagent reported it as such instead of presenting it as the general fine. That is the same mistake the evaluation found in q12, where the agent gave the Article 100 figure as the answer, so this run shows the correct handling of that pair of articles, although a single run does not show that the problem is fixed.
 
 ## Adding a document
 
-If a document is already indexed with identical content (same SHA-256), `add_document` returns `UNCHANGED` and embeds nothing, so repeating the call is safe. If a document with the same name has different content, it returns `REPLACED`: that document's old chunks are deleted first, so no stale passages remain. Otherwise it returns `ADDED`. Allowed types are .html, .htm, .txt, .md and .pdf, up to 30 MB. [CONFIRM: only the `ADDED` case was run in the experiment; run `uv run python -c "from index import index_document; print(index_document('addon/data_act.html'))"` to see `UNCHANGED` and add the output here.]
+If a document is already indexed with identical content (same SHA-256), `add_document` returns `UNCHANGED` and embeds nothing, so repeating the call is safe. If a document with the same name has different content, it returns `REPLACED`: that document's old chunks are deleted first, so no stale passages remain. Otherwise it returns `ADDED`. Allowed types are .html, .htm, .txt, .md and .pdf, up to 30 MB. 
 
 Experiment: the unanswerable question was q37, "Under the Data Act, what is the maximum notice period a customer may be required to give to initiate switching between data processing services?" The added document was the Data Act (Regulation (EU) 2023/2854), 87 chunks, added through the agent's `add_document` tool after I approved the prompt.
 
 - Before: "NOT_FOUND: The indexed documents (GDPR, AI Act, ePrivacy Directive) do not contain the Data Act or rules on switching between data processing services."
 - After: "Under the Data Act, the maximum notice period for the initiation of the switching process between data processing services shall not exceed two months [data_act:Article 25]."
 
-The second question (q38, the transitional period) went the same way: refused before; after, it answered 30 calendar days, and added that if this is technically unfeasible the provider must notify the customer within 14 working days and propose an alternative transitional period of at most seven months, citing `[data_act:Article 25]`. [CONFIRM: checked against the text of Article 25.] One flaw: the agent's own reply to the "please add the document" request was `NOT_FOUND: The search tool does not contain information confirming the indexing action.` The indexing had worked (87 of 87 chunks embedded); the system prompt demands search-backed answers, so the agent cannot simply confirm an action. Source: `eval/addon_before_after.json`.
+The second question (q38, the transitional period) went the same way: refused before; after, it answered 30 calendar days, and added that if this is technically unfeasible the provider must notify the customer within 14 working days and propose an alternative transitional period of at most seven months, citing `[data_act:Article 25]`.
+
+One flaw: the agent's own reply to the "please add the document" request was `NOT_FOUND: The search tool does not contain information confirming the indexing action.` The indexing had worked (87 of 87 chunks embedded); the system prompt demands search-backed answers, so the agent cannot simply confirm an action. Source: `eval/addon_before_after.json`.
+
+Note on the evaluation files: `eval/e2e_results.csv` is the run made before the Data Act was added, so q37 and q38 appear there as correct refusals. Their "after" answers are in `eval/addon_before_after.json`, not in the CSV. The committed `index/` contains only the three base documents (363 chunks, no `data_act` chunks); the Data Act was added later as an add-on through `add_document` for this experiment. Running `main.py evaluate` on the committed index therefore reproduces the before state, with q37 and q38 refused.
 
 ## Harness and guardrails
 
@@ -90,53 +120,84 @@ Extra guardrail: a citation check. Every `[doc:Location]` in the final answer mu
 
 Where it fired: in this test set the guardrail never caught a real fabrication. Its only effect was three false positives: q25 and q29 in the first run (the model cited `Article 83(5)` with a paragraph number, which did not match `Article 83`), and q28 (the model grouped two citations in one bracket, `[ai_act:Article 5 (part 2/4), ai_act:Article 5 (part 3/4)]`). The good answer for q28 was rejected and replaced by NOT_FOUND; the rejected drafts are in `eval/answers_third_run.jsonl`. I changed the matching to strip paragraph numbers and to split grouped citations, then re-asked those questions. The first run is kept in `eval/answers_first_run.jsonl` as evidence.
 
+The final answers in `e2e_results.csv` show that the models vary in how they write citations: q16–q20 and q24 wrap them in backticks, q28 groups two in one bracket, and q03, q05 and others use the plain form. The normaliser handles all of these, so the check was exercised on real variation, but it never had to reject an actual fabricated citation. The guardrail also cannot check the other rule in `AGENTS.md`, "search once per part": that is left to the model (see Failures, q27 and q29).
+
 ## Evaluation
 
 Code checks (in `evaluate.py`): every cited passage was actually retrieved; unanswerable questions were refused; answerable questions were not refused; the expected article was cited.
 
 Judge: `gemini-flash-lite-latest`, temperature 0, applied to answerable questions that were not refused. Rubric: `correctness` is `correct` if every key fact in the reference (numbers, deadlines, amounts) is stated correctly and nothing contradicts it, `partial` if the direction is right but a key fact is missing or imprecise, `incorrect` otherwise; `supported` is true only if every claim in the answer appears in the cited passages.
 
-Models: the answers come from three models because of free-tier quotas (20 requests a day on `gemini-2.5-flash`): q01–q13 `gemini-2.5-flash`, q14–q21 `gemini-3-flash-preview`, q22–q38 and all re-asked questions `gemini-flash-lite-latest`. The judge is the lite model, a weaker grader than the agent models, which is one reason for the human labels.
+Models: the answers come from three models because of free-tier quotas (20 requests a day on `gemini-2.5-flash`): q01–q13 `gemini-2.5-flash`, q14–q21 `gemini-3-flash-preview`, q22–q38 and all re-asked questions `gemini-flash-lite-latest`. The judge is the lite model, a weaker grader than the agent models, which is one reason for the human labels. For q22–q30 the lite model therefore graded its own answers, which could favour them.
 
 Agreement with the judge: I labelled all 30 answered questions myself (`eval/human_labels.csv`, blind to the judge's verdicts). Agreement on correctness is 29 of 30 (96.7%); the disagreement is q09, where I marked `partial` because the answer added the Article 49 exceptions beyond the reference and the judge said `correct`. Agreement on `supported` is 29 of 30 (96.7%); the disagreement is q12, where I marked `no` because the answer gives the EUR 1.5 million fine of Article 100 (Union institutions) as the general fine, and the judge said `yes`. High agreement on 30 labels is encouraging but the labels are mostly "correct", so it says little about how the judge treats wrong answers.
 
+Both disagreements are cases where the judge was more lenient than I was, which is the dangerous direction for this use case. The q12 case is instructive: the same judge marked the answer `incorrect` on correctness but `supported = True`, because the sentence really is in the cited Article 100 passage. A claim can be supported by its citation and still answer the wrong question, so "supported" alone does not protect a user from picking the wrong rule.
+
 | Measure | Result |
 |---|---|
-| Correct (30 answerable questions) | 28 (93%) |
+| Correct (30 answerable questions) | 28 (93%, judge's grade; Wilson 95% interval 79–98%) |
+| Correct by my own labels (q09 as partial) | 27 (90%; interval 74–97%) |
 | Correct or partial | 29 (97%) |
 | Unsupported claims (30 answered) | 1 (3%), q21 |
 | Wrong refusals | 0 (after fixing the guardrail) |
 | Correct refusals (8 unanswerable) | 7 (87.5%); the 8th, q33, is a bad test question |
-| Refusal rate on valid unanswerable questions | 7 of 7 (0 hallucinations) |
+| Refusal rate on valid unanswerable questions | 7 of 7 (0 hallucinations; the 95% lower bound is about 65%, so this means no hallucination in 7 attempts, not "always refuses") |
 | Expected article cited | 29 of 30 (97%) |
+| All expected passages cited, two-passage questions | 6 of 7 (q27 cites only Article 27) |
 | Mean time and tokens per question | 14.4 s, 5,324 tokens (202,304 in total) |
 
-Source: `eval/summary.json`, `eval/e2e_results.csv`.
+The "Correct" row uses the judge's grade; the "own labels" row is the one I would quote if the judge's leniency is a concern.
+
+Results by answering model (answerable questions only, judge's grade):
+
+| Model | Questions | Correct | Failures |
+|---|---|---|---|
+| `gemini-2.5-flash` | q01–q13 | 12 of 13 | q12 (incorrect) |
+| `gemini-3-flash-preview` | q14–q21 | 7 of 8 | q21 (partial, unsupported) |
+| `gemini-flash-lite-latest` | q22–q30 | 9 of 9 | none |
+
+The weakest model had no failures. I do not read this as evidence that it is better: its slice is small (9 questions) and mostly multi-part questions with several searches, and it was also the judge for that slice. The honest conclusion is that the model switch makes it impossible to attribute the results to one model, and a rerun with a single model would be needed to separate model effects from question effects.
+
+Cost and speed per question:
+
+| Slice | Mean seconds | Notes |
+|---|---|---|
+| q01–q13 (`gemini-2.5-flash`) | 5.1 | closest to real model latency |
+| q14–q21 (`gemini-3-flash-preview`) | 16.5 | |
+| q22–q38 (`gemini-flash-lite-latest`) | 20.6 | includes q28 (42.8 s) and q30 (52.0 s) |
+
+The overall median is about 15 s. Many later questions cluster at 14–16 s, which looks like my free-tier rate limiter rather than model time, so about 5 s per question (the first slice) is the better estimate of unthrottled latency. Tokens: the 7 two-passage questions averaged about 10,700 tokens against about 4,200 for the single-passage ones (roughly 2.6 times), and q28 (24,278 tokens, 4 searches) and q30 (20,263 tokens, 4 searches) alone account for 22% of the 202,304 total.
+
+Source: `eval/e2e_results.csv` (the per-question rows) and `eval/summary.json` (computed from that file).
 
 ## Failures
 
 | Question | Category | What happened |
 |---|---|---|
-| q12 | wrong answer from a retrieved passage | Asked for the maximum fine for prohibited AI practices, the agent answered EUR 1.5 million from Article 100, which applies to Union institutions; the general fine for companies is EUR 35M or 7% (Article 99). Search had returned Article 99 (together with Articles 5 and 100), so the right passage was available and the agent picked the wrong one. |
+| q12 | wrong answer from a retrieved passage | Asked for the maximum fine for prohibited AI practices, the agent answered EUR 1.5 million from Article 100, which applies to Union institutions; the general fine for companies is EUR 35M or 7% (Article 99). Search had returned Article 99 (together with Articles 5 and 100), so the right passage was available and the agent picked the wrong one. It used a single search and took the top result without checking who the fine applies to, and the judge still marked the answer as supported. |
 | q21 | unsupported claim | Article 27 refers to "points 5(b) and (c) of Annex III"; the agent described them as education and students (they concern creditworthiness and insurance). It filled in an annex it had not retrieved. |
+| q27 | incomplete citation (judge: correct) | The answer says the AI Act fundamental rights impact assessment "complements" the data protection impact assessment, which is right, but it cites only `[ai_act:Article 27]` and never retrieved GDPR Article 35. It used one search for a two-law question although `AGENTS.md` says to search once per part. The judge accepted it because Article 27(4) itself mentions the DPIA, so the code check `gold_all = False` is the only thing that flags it. |
 | q09 | partial (my label) | The answer lists the Article 49 exceptions as well as Article 46; the extra content is accurate but goes beyond the reference. |
 | q33 | bad test question | "Unanswerable" question that has a legitimate negative answer. |
 | q25, q29 (first run) | wrong refusal, caused by my guardrail | The model cited paragraph numbers (`Article 83(5)`); the check treated it as a fabricated citation. Fixed. |
 | q28 | wrong refusal, caused by my guardrail | Grouped citations in one bracket were not split. Fixed. |
 | q25 (second run) | tool error | Parallel searches crashed ChromaDB (one client per call is not thread-safe). Fixed with one client per process and a lock; failed tool calls are now retried and counted. |
 
-Counts for the 30 answerable questions after the fixes: 2 real model failures (1 wrong answer, 1 unsupported claim), 1 partial by my label, 0 retrieval misses in the agent's own searches (q12's correct passage was retrieved), plus the guardrail and tool errors that were fixed during the evaluation. The two retrieval misses of the `article` design (q27, q28) were answered correctly by the agent because it searched each law separately.
+Counts for the 30 answerable questions after the fixes: 2 real model failures (1 wrong answer, 1 unsupported claim), 1 incomplete citation (q27), 1 partial by my label (q09), 0 retrieval misses in the agent's own searches (q12's correct passage was retrieved), plus the guardrail and tool errors that were fixed during the evaluation. The two retrieval misses of the `article` design (q27, q28) were answered correctly by the agent in q28 because it searched each law separately; in q27 the agent did not (one search), and the GDPR passage is exactly what is missing from the citation.
 
-What to fix first: (1) tell the agent that when passages give different amounts or rules for different parties it must say which applies or give both (q12); (2) when an article points to an annex, retrieve the annex before explaining the reference (q21); (3) run the evaluation again with the `article` design to confirm it beats the hybrid design end to end.
+Search behaviour: `AGENTS.md` asks for one search per part of a multi-part question, but only q24–q26, q28 and q30 show more than one search among the two-passage questions; q27 and q29 used one. q29 still cited both articles, q27 did not. Nothing in the code enforces this rule, so compliance depends on the model. In the subagent transcript above the rule was followed (two searches, one per law), but that is a single run.
+
+What to fix first: (1) tell the agent that when passages give different amounts or rules for different parties it must say which applies or give both (q12); (2) when an article points to an annex, retrieve the annex before explaining the reference (q21); (3) enforce one search per part in the harness, for example by requiring at least two searches when the question names two laws (q27); (4) run the evaluation again with the `article` design to confirm it beats the hybrid design end to end.
 
 ## Decision
 
-I would let users rely on it only as a finder of the relevant articles, not as a source of final figures. The numbers are good: 93% correct, a single unsupported claim, and no answer to any of the 7 questions the corpus truly cannot answer, with citations that were all valid. But the one clear error (q12) is the costly kind from the use case: the answer understated the fine by a factor of 23 and sounded confident. A small test set (30 answerable questions, and I labelled mostly "correct" answers) cannot rule out more errors like it.
+I would let users rely on it only as a finder of the relevant articles, not as a source of final figures. The numbers are good: 93% correct (90% by my own labels), a single unsupported claim, and no answer to any of the 7 questions the corpus truly cannot answer, with citations that were all valid. But the one clear error (q12) is the costly kind from the use case: the answer understated the fine by a factor of 23 and sounded confident, and the judge did not catch it as unsupported. A small test set (30 answerable questions, with a 95% interval of roughly 79–98% for the judge's grade, and my labels mostly "correct") cannot rule out more errors like it.
 
 Safeguards I would require: show the cited article text next to every answer; require the user to open the cited article for any number (fine, deadline, threshold); keep human approval for `add_document`; restrict it to EU texts it has indexed and say clearly that it is not legal advice.
 
-Cost and latency per question: 14.4 s and about 5,300 tokens on average (202,304 tokens for the 38 questions); the time is inflated by the rate limiter I set for the free tier, and each tool call also starts the server's search. The free tier is the real limit: 20 requests a day for `gemini-2.5-flash`, and about 1,000 embedding texts a day, so a full evaluation took several days of quota.
+Cost and latency per question: 14.4 s and about 5,300 tokens on average (202,304 tokens for the 38 questions); the time is inflated by the rate limiter I set for the free tier (about 5 s per question without it, and about 15 s median as measured), and multi-part questions cost about 2.6 times more tokens than single-part ones. The free tier is the real limit: 20 requests a day for `gemini-2.5-flash`, and about 1,000 embedding texts a day, so a full evaluation took several days of quota.
 
 ## AI use
 
-I used Claude (Anthropic) throughout. It wrote the first versions of the code (ingestion, search, MCP server, agent, evaluation scripts), the draft test questions and reference answers, and the first drafts of this report, and it helped me debug (the embedding batch behaviour, the library version conflicts, the ChromaDB concurrency crash and the two guardrail false positives). I ran everything myself, downloaded the corpus, [CONFIRM: checked the questions against the law text,] labelled the 30 answers myself, and made the decisions about which designs and failure categories to report.
+I used Claude (Anthropic) throughout. It wrote the first versions of the code (ingestion, search, MCP server, agent, evaluation scripts), the draft test questions and reference answers, and the first drafts of this report, and it helped me debug (the embedding batch behaviour, the library version conflicts, the ChromaDB concurrency crash and the two guardrail false positives). I ran everything myself, downloaded the corpus, labelled the 30 answers myself, and made the decisions about which designs and failure categories to report.
